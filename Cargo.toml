@@ -1,7 +1,15 @@
 [package]
-name = "solanaprojectinit"
+name = "solanainit"
+description = "A quickstart Solana+TypeScript/Jest project generator"
+authors = ["Priyanshu Sharma <inbox.priyanshu@gmail.com>"]
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/PriyanshuSharma23/solana_project_initializer"
+
+[[bin]]
+name = "solanainit"
+path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
