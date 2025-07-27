@@ -5,141 +5,151 @@
 //! This will initialize the project with nodejs and cargo lib, also it should use no vcs by default.
 
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+
+mod cargo_setup;
+mod config;
+mod error;
+mod node_setup;
+mod templates;
+
+use config::ProjectConfig;
+use error::{ProjectError, Result};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("No path provided");
-    let project_path = Path::new(&path);
+    if let Err(e) = run() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+}
 
-    // 1. Create project directory
-    fs::create_dir_all(&project_path).expect("Failed to create project directory");
+fn run() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
 
-    // 2. Initialize Cargo library
-    Command::new("cargo")
-        .arg("init")
-        .arg("--lib")
-        .arg("--vcs")
-        .arg("none")
-        .arg(&path)
-        .status()
-        .expect("Failed to initialize cargo project");
-
-    // 3. Add solana_program as a dependency
-    let cargo_toml_path = project_path.join("Cargo.toml");
-    let mut cargo_toml = fs::read_to_string(&cargo_toml_path).expect("Failed to read Cargo.toml");
-    if !cargo_toml.contains("solana-program") {
-        cargo_toml.push_str("\nsolana-program = \"2.3.0\"\n");
-        fs::write(&cargo_toml_path, cargo_toml).expect("Failed to write Cargo.toml");
+    if args.len() < 2 {
+        return Err(ProjectError::Usage(
+            "Usage: solanainit <project_path> [--config <config_file>]".to_string(),
+        ));
     }
 
-    // 4. Add node_modules to .gitignore assuming it always exists
-    let gitignore_path = project_path.join(".gitignore");
-    let gitignore_content = r#"
-target/
-node_modules/
-dist/
-.DS_Store
-*.log
-*.tsbuildinfo
-.env
-coverage/
-# Solana artifacts
-*.so
-*.keypair.json"#;
+    let project_path = Path::new(&args[1]);
 
-    fs::write(&gitignore_path, gitignore_content).expect("Failed to write .gitignore");
+    // Load configuration (can be extended to read from file)
+    let config = ProjectConfig::default();
 
-    // 5. Write a hello world Solana program to src/lib.rs
-    let lib_rs_path = project_path.join("src/lib.rs");
-    let solana_hello = r#"
-use solana_program::{
-    account_info::AccountInfo,
-    entrypoint,
-    entrypoint::ProgramResult,
-    pubkey::Pubkey,
-    msg,
-};
+    // Validate project path
+    if project_path.exists() && !project_path.read_dir()?.next().is_none() {
+        return Err(ProjectError::DirectoryExists(project_path.to_path_buf()));
+    }
 
-entrypoint!(process_instruction);
+    println!("Initializing Solana project at: {}", project_path.display());
 
-pub fn process_instruction(
-    _program_id: &Pubkey,
-    _accounts: &[AccountInfo],
-    _instruction_data: &[u8],
-) -> ProgramResult {
-    msg!("Hello, Solana World!");
+    // Create project structure
+    let project = SolanaProject::new(project_path.to_path_buf(), config)?;
+    project.initialize()?;
+
+    println!(
+        "✅ Solana project initialized successfully at {}",
+        project_path.display()
+    );
+    println!("📁 Project structure created");
+    println!("🔧 Cargo.toml configured with Solana dependencies");
+    println!("🧪 TypeScript test environment set up with Jest");
+    println!("📝 Sample Solana program and tests created");
+
     Ok(())
-}"#;
-    fs::write(&lib_rs_path, solana_hello).expect("Failed to write hello world Solana program");
+}
 
-    // 6. Initialize Node.js project in tests/ with Jest and TypeScript
-    let tests_path = project_path.join("tests");
-    fs::create_dir_all(&tests_path).expect("Failed to create tests directory");
+struct SolanaProject {
+    path: PathBuf,
+    config: ProjectConfig,
+}
 
-    Command::new("npm")
-        .arg("init")
-        .arg("-y")
-        .current_dir(&project_path)
-        .status()
-        .expect("Failed to initialize npm project");
+impl SolanaProject {
+    fn new(path: PathBuf, config: ProjectConfig) -> Result<Self> {
+        Ok(Self { path, config })
+    }
 
-    Command::new("npm")
-        .arg("install")
-        .arg("--save-dev")
-        .arg("jest")
-        .arg("typescript")
-        .arg("@types/jest")
-        .arg("ts-jest")
-        .current_dir(&project_path)
-        .status()
-        .expect("Failed to install jest/typescript");
+    fn initialize(&self) -> Result<()> {
+        // Create project directory
+        fs::create_dir_all(&self.path)?;
 
-    Command::new("npm")
-        .arg("install")
-        .arg("@solana/web3.js")
-        .arg("borsh")
-        .current_dir(&project_path)
-        .status()
-        .expect("Failed to install jest/typescript");
+        // Initialize Cargo project
+        self.setup_cargo_project()?;
 
-    // 7. Write tsconfig.json
-    let tsconfig = r#"{
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": ["ES2020", "DOM"],
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "outDir": "./dist",
-    "rootDir": "./"
-  },
-  "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["node_modules", "dist"]
-}"#;
-    fs::write(project_path.join("tsconfig.json"), tsconfig).expect("Failed to write tsconfig.json");
+        // Setup Node.js environment
+        self.setup_node_project()?;
 
-    // 8. Write jest.config.js
-    let jest_config = r#"module.exports = {
-  preset: 'ts-jest',
-  testEnvironment: 'node',
-  testMatch: ['**/tests/**/*.test.ts'],
-  moduleFileExtensions: ['ts', 'js'],
-  transform: {
-    '^.+\\.ts$': 'ts-jest',
-  },
-};"#;
-    fs::write(project_path.join("jest.config.js"), jest_config)
-        .expect("Failed to write jest.config.js");
+        // Create project files
+        self.create_project_files()?;
 
-    // 9. Create a sample test file
-    let sample_test = r#"test('example', () => { expect(1 + 1).toBe(2); });"#;
-    fs::write(tests_path.join("example.test.ts"), sample_test)
-        .expect("Failed to write sample test");
+        Ok(())
+    }
 
-    println!("Solana project initialized at {}", path);
+    fn setup_cargo_project(&self) -> Result<()> {
+        cargo_setup::initialize_cargo_project(&self.path, &self.config)?;
+        Ok(())
+    }
+
+    fn setup_node_project(&self) -> Result<()> {
+        node_setup::initialize_node_project(&self.path, &self.config)?;
+        Ok(())
+    }
+
+    fn create_project_files(&self) -> Result<()> {
+        // Create .gitignore
+        self.create_gitignore()?;
+
+        // Create Solana program
+        self.create_solana_program()?;
+
+        // Create TypeScript configuration
+        self.create_typescript_config()?;
+
+        // Create Jest configuration
+        self.create_jest_config()?;
+
+        // Create sample test
+        self.create_sample_test()?;
+
+        Ok(())
+    }
+
+    fn create_gitignore(&self) -> Result<()> {
+        let gitignore_path = self.path.join(".gitignore");
+        let content = templates::gitignore_template();
+        fs::write(gitignore_path, content)?;
+        Ok(())
+    }
+
+    fn create_solana_program(&self) -> Result<()> {
+        let lib_rs_path = self.path.join("src/lib.rs");
+        let content = templates::solana_program_template(&self.config);
+        fs::write(lib_rs_path, content)?;
+        Ok(())
+    }
+
+    fn create_typescript_config(&self) -> Result<()> {
+        let tsconfig_path = self.path.join("tsconfig.json");
+        let content = templates::tsconfig_template(&self.config);
+        fs::write(tsconfig_path, content)?;
+        Ok(())
+    }
+
+    fn create_jest_config(&self) -> Result<()> {
+        let jest_config_path = self.path.join("jest.config.js");
+        let content = templates::jest_config_template(&self.config);
+        fs::write(jest_config_path, content)?;
+        Ok(())
+    }
+
+    fn create_sample_test(&self) -> Result<()> {
+        let tests_path = self.path.join("tests");
+        fs::create_dir_all(&tests_path)?;
+
+        let sample_test_path = tests_path.join("example.test.ts");
+        let content = templates::sample_test_template(&self.config);
+        fs::write(sample_test_path, content)?;
+        Ok(())
+    }
 }
